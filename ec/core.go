@@ -56,8 +56,9 @@ func (receiver *MySQLStorage) init(module string) Handler {
 		createTable(db, tableName)
 	}
 	return &MySQLHandler{
-		module: module,
-		db:     db,
+		module:    module,
+		db:        db,
+		tableName: tableName,
 	}
 }
 
