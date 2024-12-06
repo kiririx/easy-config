@@ -1,4 +1,4 @@
-module easy-config
+module github.com/kiririx/easy-config
 
 go 1.23.3
 
