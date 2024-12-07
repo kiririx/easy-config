@@ -16,4 +16,13 @@ t.Log(h.Get("word.zh"))
 ```
 
 ## 存储在properties文件
-待开发……
+```go
+h := ec.Initialize(ec.NewPropertiesStorage("D:\\easy-config.properties"), "main")
+h.Set("word.en", "this is an apple")
+t.Log(h.Get("word.en"))
+h.Remove("word.en")
+t.Log(h.Get("word.en"))
+```
+
+# 开发计划
+下个版本加入并发安全控制

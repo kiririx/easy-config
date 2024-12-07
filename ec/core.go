@@ -1,10 +1,15 @@
 package ec
 
 import (
+	"bufio"
 	"database/sql"
+	"errors"
 	"fmt"
 	_ "github.com/go-sql-driver/mysql"
+	"io"
 	"log"
+	"os"
+	"strings"
 )
 
 type StorageType int
@@ -17,6 +22,27 @@ var (
 type Storage interface {
 	getStorage() StorageType
 	init(module string) Handler
+}
+
+type PropertiesStorage struct {
+	path     string
+	fileName string
+}
+
+func NewPropertiesStorage(path string) Storage {
+	return &PropertiesStorage{path: path}
+}
+
+func (receiver *PropertiesStorage) getStorage() StorageType {
+	return Properties
+}
+
+func (receiver *PropertiesStorage) init(module string) Handler {
+	configMap, err := resolveProperties(receiver.path)
+	if err != nil {
+		configMap = make(map[string]string)
+	}
+	return &PropertiesHandler{module: module, configMap: &configMap, path: receiver.path}
 }
 
 type MySQLStorage struct {
@@ -82,6 +108,7 @@ func Initialize(storage Storage, module string) Handler {
 type Handler interface {
 	Get(key string) string
 	Set(key string, value string)
+	Remove(key string)
 }
 
 type MySQLHandler struct {
@@ -135,12 +162,24 @@ func (h *MySQLHandler) Set(key string, value string) {
 	}
 }
 
-func Get(key string) {
+func (h *MySQLHandler) Remove(key string) {
+	// 执行删除操作
+	result, err := h.db.Exec("DELETE FROM "+h.tableName+" WHERE module = ? AND name = ?", h.module, key)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-}
+	// 检查是否有行被删除
+	affectedRows, err := result.RowsAffected()
+	if err != nil {
+		log.Fatal(err)
+	}
 
-func Set(key string, value string) {
-
+	if affectedRows > 0 {
+		log.Printf("成功删除记录: module=%s, key=%s\n", h.module, key)
+	} else {
+		log.Printf("未找到记录以删除: module=%s, key=%s\n", h.module, key)
+	}
 }
 
 // 检查表是否存在
@@ -169,4 +208,176 @@ func createTable(db *sql.DB, tableName string) {
 	if err != nil {
 		log.Fatalf("创建表失败: %v", err)
 	}
+}
+
+type PropertiesHandler struct {
+	module    string
+	configMap *map[string]string
+	path      string
+}
+
+func (h *PropertiesHandler) Get(key string) string {
+	return (*h.configMap)[h.module+"."+key]
+}
+
+func (h *PropertiesHandler) Set(key string, value string) {
+	// 先修改文件
+	keyOfFile := h.module + "." + key
+	if err := updateProperties(h.path, keyOfFile, value); err != nil {
+		log.Fatal(err)
+		return
+	}
+	(*h.configMap)[h.module+"."+key] = value
+}
+
+func (h *PropertiesHandler) Remove(key string) {
+	keyOfFile := h.module + "." + key
+	if err := removeKeyFromProperties(h.path, keyOfFile); err != nil {
+		log.Fatal(err)
+		return
+	}
+	delete(*h.configMap, keyOfFile)
+}
+
+func removeKeyFromProperties(path string, key string) error {
+	// 尝试打开文件，如果文件不存在则返回错误
+	file, err := os.OpenFile(path, os.O_RDWR, 0644)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("文件不存在: %w", err)
+		}
+		return fmt.Errorf("打开文件失败: %w", err)
+	}
+	defer file.Close()
+
+	// 读取现有的内容
+	scanner := bufio.NewScanner(file)
+	var lines []string
+	found := false
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		// 检查当前行是否为要删除的键
+		if strings.HasPrefix(line, key+"=") {
+			found = true // 找到要删除的键
+			continue     // 跳过这一行
+		}
+		lines = append(lines, line) // 保留原有行
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("读取文件失败: %w", err)
+	}
+
+	// 如果没有找到该键，则返回
+	if !found {
+		return nil
+	}
+
+	// 重新写入文件
+	if err := file.Truncate(0); err != nil {
+		return fmt.Errorf("清空文件失败: %w", err)
+	}
+	if _, err := file.Seek(0, 0); err != nil {
+		return fmt.Errorf("重置文件指针失败: %w", err)
+	}
+
+	writer := bufio.NewWriter(file)
+	for _, line := range lines {
+		if _, err := writer.WriteString(line + "\n"); err != nil {
+			return fmt.Errorf("写入文件失败: %w", err)
+		}
+	}
+
+	if err := writer.Flush(); err != nil {
+		return fmt.Errorf("刷新写入缓冲区失败: %w", err)
+	}
+
+	return nil
+}
+
+// updateProperties 更新或添加键值对到 properties 文件
+func updateProperties(path string, key string, value string) error {
+	// 尝试打开文件，如果文件不存在则创建新文件
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		return fmt.Errorf("打开或创建文件失败: %w", err)
+	}
+	defer file.Close()
+
+	// 读取现有的内容
+	scanner := bufio.NewScanner(file)
+	var lines []string
+	found := false
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		// 检查当前行是否为要更新的键
+		if strings.HasPrefix(line, key+"=") {
+			lines = append(lines, key+"="+value) // 修改值
+			found = true
+		} else {
+			lines = append(lines, line) // 保留原有行
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("读取文件失败: %w", err)
+	}
+
+	// 如果没有找到该键，则添加新键值对
+	if !found {
+		lines = append(lines, key+"="+value)
+	}
+
+	// 重新写入文件
+	if err := file.Truncate(0); err != nil {
+		return fmt.Errorf("清空文件失败: %w", err)
+	}
+	if _, err := file.Seek(0, 0); err != nil {
+		return fmt.Errorf("重置文件指针失败: %w", err)
+	}
+
+	writer := bufio.NewWriter(file)
+	for _, line := range lines {
+		if _, err := writer.WriteString(line + "\n"); err != nil {
+			return fmt.Errorf("写入文件失败: %w", err)
+		}
+	}
+
+	if err := writer.Flush(); err != nil {
+		return fmt.Errorf("刷新写入缓冲区失败: %w", err)
+	}
+
+	return nil
+}
+
+func resolveProperties(path string) (map[string]string, error) {
+	file, _ := os.Open(path)
+	defer file.Close()
+	_, err := file.Stat()
+	if err != nil {
+		return nil, errors.New("file is not exist")
+	}
+	conf := make(map[string]string)
+	br := bufio.NewReader(file)
+	for {
+		line, _, err := br.ReadLine()
+		if err == io.EOF {
+			// 读取结束
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		lineContent := string(line)
+		prop := strings.TrimSpace(lineContent)
+		if prop == "" {
+			continue
+		}
+		key := prop[:strings.Index(prop, "=")]
+		val := prop[strings.Index(prop, "=")+1:]
+		conf[key] = val
+	}
+	return conf, nil
 }
