@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 )
 
 type StorageType int
@@ -60,6 +61,12 @@ func (receiver *MySQLStorage) getStorage() StorageType {
 
 //var db *sql.DB
 
+var dbCache = &sync.Map{}
+
+func getDbCacheKey(module, key string) string {
+	return fmt.Sprintf("%s:%s", module, key)
+}
+
 func (receiver *MySQLStorage) init(module string) Handler {
 	// 数据库连接字符串
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%v)/%s", receiver.user, receiver.pass, receiver.host, receiver.port, receiver.database)
@@ -68,14 +75,14 @@ func (receiver *MySQLStorage) init(module string) Handler {
 	var err error
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 
 	// 测试数据库连接
 	if err := db.Ping(); err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
-	fmt.Println("[easy-config] Successfully connected to the database!")
+	log.Println("[easy-config] Successfully connected to the database!")
 	// 检查表是否存在
 	tableName := receiver.table
 	if !checkTableExists(db, tableName) {
@@ -85,6 +92,7 @@ func (receiver *MySQLStorage) init(module string) Handler {
 		module:    module,
 		db:        db,
 		tableName: tableName,
+		cache:     &sync.Map{},
 	}
 }
 
@@ -107,7 +115,7 @@ func Initialize(storage Storage, module string) Handler {
 
 type Handler interface {
 	Get(key string) string
-	Set(key string, value string)
+	Set(key string, value string) error
 	Remove(key string)
 }
 
@@ -115,70 +123,81 @@ type MySQLHandler struct {
 	module    string
 	db        *sql.DB
 	tableName string
+	cache     *sync.Map
 }
 
 func (h *MySQLHandler) Get(key string) string {
+	v, ok := h.cache.Load(key)
+	if ok {
+		return v.(string)
+	}
 	// 执行查询
 	rows, err := h.db.Query("SELECT value FROM "+h.tableName+" WHERE module = ? and name = ?", h.module, key)
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
+		return ""
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		var value string
 		if err := rows.Scan(&value); err != nil {
-			log.Fatal(err)
+			log.Println(err)
+			return ""
 		}
+		h.cache.Store(key, value)
 		return value
 	}
 
 	if err := rows.Err(); err != nil {
-		log.Fatal(err)
+		log.Println(err)
+		return ""
 	}
 	return ""
 }
 
-func (h *MySQLHandler) Set(key string, value string) {
+func (h *MySQLHandler) Set(key string, value string) error {
 	// 检查记录是否存在
 	var exists bool
 	err := h.db.QueryRow("SELECT EXISTS(SELECT 1 FROM "+h.tableName+" WHERE module = ? AND name = ?)", h.module, key).Scan(&exists)
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
+		return err
 	}
 
 	if exists {
 		// 如果存在，则更新 value
 		_, err := h.db.Exec("UPDATE "+h.tableName+"  SET value = ? WHERE module = ? AND name = ?", value, h.module, key)
 		if err != nil {
-			log.Fatal(err)
+			log.Println(err)
+			return err
 		}
 	} else {
 		// 如果不存在，则插入新记录
 		_, err := h.db.Exec("INSERT INTO "+h.tableName+"  (module, name, value) VALUES (?, ?, ?)", h.module, key, value)
 		if err != nil {
-			log.Fatal(err)
+			log.Println(err)
+			return err
 		}
 	}
+	h.cache.Delete(key)
+	return nil
 }
 
 func (h *MySQLHandler) Remove(key string) {
+	defer func() {
+		h.cache.Delete(key)
+	}()
 	// 执行删除操作
 	result, err := h.db.Exec("DELETE FROM "+h.tableName+" WHERE module = ? AND name = ?", h.module, key)
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
 	}
 
 	// 检查是否有行被删除
-	affectedRows, err := result.RowsAffected()
+	_, err = result.RowsAffected()
 	if err != nil {
-		log.Fatal(err)
-	}
-
-	if affectedRows > 0 {
-		log.Printf("成功删除记录: module=%s, key=%s\n", h.module, key)
-	} else {
-		log.Printf("未找到记录以删除: module=%s, key=%s\n", h.module, key)
+		log.Println(err)
 	}
 }
 
@@ -189,7 +208,7 @@ func checkTableExists(db *sql.DB, tableName string) bool {
 	var name string
 	err := row.Scan(&name)
 	if err != nil && err != sql.ErrNoRows {
-		log.Fatalf("查询表失败: %v", err)
+		log.Printf("查询表失败: %v\n", err)
 	}
 	return name != ""
 }
@@ -206,7 +225,16 @@ func createTable(db *sql.DB, tableName string) {
 
 	_, err := db.Exec(createTableSQL)
 	if err != nil {
-		log.Fatalf("创建表失败: %v", err)
+		log.Printf("创建表失败: %v\n", err)
+		panic(err)
+	}
+	createIndexSQL := fmt.Sprintf(`
+        CREATE UNIQUE INDEX idx_easy_config_items_i1 ON %s (module, name)`, tableName)
+
+	_, err = db.Exec(createIndexSQL)
+	if err != nil {
+		log.Printf("创建索引失败: %v\n", err)
+		panic(err)
 	}
 }
 
@@ -220,20 +248,21 @@ func (h *PropertiesHandler) Get(key string) string {
 	return (*h.configMap)[h.module+"."+key]
 }
 
-func (h *PropertiesHandler) Set(key string, value string) {
+func (h *PropertiesHandler) Set(key string, value string) error {
 	// 先修改文件
 	keyOfFile := h.module + "." + key
 	if err := updateProperties(h.path, keyOfFile, value); err != nil {
-		log.Fatal(err)
-		return
+		log.Println(err)
+		return err
 	}
 	(*h.configMap)[h.module+"."+key] = value
+	return nil
 }
 
 func (h *PropertiesHandler) Remove(key string) {
 	keyOfFile := h.module + "." + key
 	if err := removeKeyFromProperties(h.path, keyOfFile); err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		return
 	}
 	delete(*h.configMap, keyOfFile)
