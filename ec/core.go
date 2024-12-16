@@ -13,6 +13,14 @@ import (
 	"sync"
 )
 
+var defaultModule = "DEFAULT"
+
+type Item struct {
+	module string
+	key    string
+	value  string
+}
+
 type StorageType int
 
 var (
@@ -58,8 +66,6 @@ type MySQLStorage struct {
 func (receiver *MySQLStorage) getStorage() StorageType {
 	return MySQL
 }
-
-//var db *sql.DB
 
 var dbCache = &sync.Map{}
 
@@ -110,6 +116,9 @@ func NewMySQLStorage(host string, port int, user, passwd, database string) *MySQ
 
 // Initialize 入口函数
 func Initialize(storage Storage, module string) Handler {
+	if strings.TrimSpace(module) == "" {
+		module = defaultModule
+	}
 	return storage.init(module)
 }
 
@@ -117,6 +126,7 @@ type Handler interface {
 	Get(key string) string
 	Set(key string, value string) error
 	Remove(key string)
+	List() []Item
 }
 
 type MySQLHandler struct {
@@ -201,6 +211,25 @@ func (h *MySQLHandler) Remove(key string) {
 	}
 }
 
+func (h *MySQLHandler) List() []Item {
+	rows, err := h.db.Query("SELECT module, name, value FROM "+h.tableName+" where module = ? ORDER BY name", h.module)
+	if err != nil {
+		log.Println(err)
+		return nil
+	}
+	defer rows.Close()
+	var items []Item
+	for rows.Next() {
+		var item Item
+		if err := rows.Scan(&item.module, &item.key, &item.value); err != nil {
+			log.Println(err)
+			return []Item{}
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
 // 检查表是否存在
 func checkTableExists(db *sql.DB, tableName string) bool {
 	query := fmt.Sprintf("SHOW TABLES LIKE '%s'", tableName)
@@ -266,6 +295,20 @@ func (h *PropertiesHandler) Remove(key string) {
 		return
 	}
 	delete(*h.configMap, keyOfFile)
+}
+
+func (h *PropertiesHandler) List() []Item {
+	var items []Item
+	for k, v := range *h.configMap {
+		if strings.HasPrefix(k, h.module+".") {
+			items = append(items, Item{
+				module: h.module,
+				key:    k[len(h.module)+1:],
+				value:  v,
+			})
+		}
+	}
+	return items
 }
 
 func removeKeyFromProperties(path string, key string) error {
