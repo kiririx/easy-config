@@ -16,9 +16,9 @@ import (
 var defaultModule = "DEFAULT"
 
 type Item struct {
-	module string
-	key    string
-	value  string
+	Module string
+	Key    string
+	Value  string
 }
 
 type StorageType int
@@ -142,7 +142,7 @@ func (h *MySQLHandler) Get(key string) string {
 		return v.(string)
 	}
 	// 执行查询
-	rows, err := h.db.Query("SELECT value FROM "+h.tableName+" WHERE module = ? and name = ?", h.module, key)
+	rows, err := h.db.Query("SELECT Value FROM "+h.tableName+" WHERE Module = ? and name = ?", h.module, key)
 	if err != nil {
 		log.Println(err)
 		return ""
@@ -169,22 +169,22 @@ func (h *MySQLHandler) Get(key string) string {
 func (h *MySQLHandler) Set(key string, value string) error {
 	// 检查记录是否存在
 	var exists bool
-	err := h.db.QueryRow("SELECT EXISTS(SELECT 1 FROM "+h.tableName+" WHERE module = ? AND name = ?)", h.module, key).Scan(&exists)
+	err := h.db.QueryRow("SELECT EXISTS(SELECT 1 FROM "+h.tableName+" WHERE Module = ? AND name = ?)", h.module, key).Scan(&exists)
 	if err != nil {
 		log.Println(err)
 		return err
 	}
 
 	if exists {
-		// 如果存在，则更新 value
-		_, err := h.db.Exec("UPDATE "+h.tableName+"  SET value = ? WHERE module = ? AND name = ?", value, h.module, key)
+		// 如果存在，则更新 Value
+		_, err := h.db.Exec("UPDATE "+h.tableName+"  SET Value = ? WHERE Module = ? AND name = ?", value, h.module, key)
 		if err != nil {
 			log.Println(err)
 			return err
 		}
 	} else {
 		// 如果不存在，则插入新记录
-		_, err := h.db.Exec("INSERT INTO "+h.tableName+"  (module, name, value) VALUES (?, ?, ?)", h.module, key, value)
+		_, err := h.db.Exec("INSERT INTO "+h.tableName+"  (Module, name, Value) VALUES (?, ?, ?)", h.module, key, value)
 		if err != nil {
 			log.Println(err)
 			return err
@@ -199,7 +199,7 @@ func (h *MySQLHandler) Remove(key string) {
 		h.cache.Delete(key)
 	}()
 	// 执行删除操作
-	result, err := h.db.Exec("DELETE FROM "+h.tableName+" WHERE module = ? AND name = ?", h.module, key)
+	result, err := h.db.Exec("DELETE FROM "+h.tableName+" WHERE Module = ? AND name = ?", h.module, key)
 	if err != nil {
 		log.Println(err)
 	}
@@ -212,7 +212,7 @@ func (h *MySQLHandler) Remove(key string) {
 }
 
 func (h *MySQLHandler) List() []Item {
-	rows, err := h.db.Query("SELECT module, name, value FROM "+h.tableName+" where module = ? ORDER BY name", h.module)
+	rows, err := h.db.Query("SELECT Module, name, Value FROM "+h.tableName+" where Module = ? ORDER BY name", h.module)
 	if err != nil {
 		log.Println(err)
 		return nil
@@ -221,7 +221,7 @@ func (h *MySQLHandler) List() []Item {
 	var items []Item
 	for rows.Next() {
 		var item Item
-		if err := rows.Scan(&item.module, &item.key, &item.value); err != nil {
+		if err := rows.Scan(&item.Module, &item.Key, &item.Value); err != nil {
 			log.Println(err)
 			return []Item{}
 		}
@@ -248,8 +248,8 @@ func createTable(db *sql.DB, tableName string) {
         CREATE TABLE %s (
             id INT AUTO_INCREMENT PRIMARY KEY,
             name VARCHAR(255) NOT NULL,
-            value VARCHAR(4096) NOT NULL,
-            module VARCHAR(64) NOT NULL
+            Value VARCHAR(4096) NOT NULL,
+            Module VARCHAR(64) NOT NULL
         )`, tableName)
 
 	_, err := db.Exec(createTableSQL)
@@ -258,7 +258,7 @@ func createTable(db *sql.DB, tableName string) {
 		panic(err)
 	}
 	createIndexSQL := fmt.Sprintf(`
-        CREATE UNIQUE INDEX idx_easy_config_items_i1 ON %s (module, name)`, tableName)
+        CREATE UNIQUE INDEX idx_easy_config_items_i1 ON %s (Module, name)`, tableName)
 
 	_, err = db.Exec(createIndexSQL)
 	if err != nil {
@@ -302,9 +302,9 @@ func (h *PropertiesHandler) List() []Item {
 	for k, v := range *h.configMap {
 		if strings.HasPrefix(k, h.module+".") {
 			items = append(items, Item{
-				module: h.module,
-				key:    k[len(h.module)+1:],
-				value:  v,
+				Module: h.module,
+				Key:    k[len(h.module)+1:],
+				Value:  v,
 			})
 		}
 	}
