@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -370,6 +371,11 @@ func removeKeyFromProperties(path string, key string) error {
 
 // updateProperties 更新或添加键值对到 properties 文件
 func updateProperties(path string, key string, value string) error {
+	// 创建上级目录
+	err := os.MkdirAll(filepath.Dir(path), 0755)
+	if err != nil {
+		return fmt.Errorf("创建目录失败: %w", err)
+	}
 	// 尝试打开文件，如果文件不存在则创建新文件
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
